@@ -67,7 +67,7 @@ BRAWL_STARS_FIGHTERS = [
     {"name": "Сту",            "role": "Убийца"},
     {"name": "Белль",          "role": "Стрелок"},
     {"name": "Гром",           "role": "Артиллерия"},
-    {"name": "Грифф",          "role": "Контроль"},
+    {"name": "Грифф",          "role": "Контроль (самый лучший боец)"},
     {"name": "Эш",             "role": "Танк"},
     {"name": "Лола",           "role": "Урон"},
     {"name": "Бонни",          "role": "Стрелок"},
@@ -172,9 +172,11 @@ def kb_hide_role() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🙈 Скрыть роль", callback_data="hide_role")]
     ])
 
-def kb_show_all_roles() -> InlineKeyboardMarkup:
+def kb_game_ended() -> InlineKeyboardMarkup:
+    """Кнопки по окончании раздачи ролей — показать роли и играть снова."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Показать все роли", callback_data="show_all_roles")]
+        [InlineKeyboardButton(text="📋 Показать все роли", callback_data="show_all_roles")],
+        [InlineKeyboardButton(text="🔁 Играть снова", callback_data="play_again")],
     ])
 
 
@@ -199,7 +201,7 @@ def generate_roles(num_players: int, num_spies: int) -> list[dict]:
 # ХЭНДЛЕРЫ
 # ──────────────────────────────────────────────
 async def cmd_start(message: Message, state: FSMContext):
-    """Команда /start — приветствие."""
+    """Команда /start — приветствие, сбрасываем всё включая сохранённые настройки."""
     await state.clear()
     await message.answer(
         "👋 Добро пожаловать в игру <b>«Шпион»</b>!\n\n"
@@ -252,21 +254,24 @@ async def cb_start_game(callback: CallbackQuery, state: FSMContext):
 
 
 async def cb_choose_theme(callback: CallbackQuery, state: FSMContext):
-    """Выбрана тема."""
+    """Выбрана тема — сохраняем message_id чтобы потом удалить запрос игроков."""
     await state.update_data(theme="brawlstars")
     await state.set_state(GameStates.entering_players)
-    await callback.message.edit_text(
+    # Редактируем сообщение и сохраняем его id для последующего удаления
+    msg = await callback.message.edit_text(
         "👥 <b>Введите количество игроков</b> (от 3 до 12):",
         parse_mode="HTML",
     )
+    await state.update_data(ask_players_msg_id=msg.message_id)
     await callback.answer()
 
 
 async def msg_enter_players(message: Message, state: FSMContext):
     """Ввод количества игроков."""
+    data = await state.get_data()
     text = message.text.strip()
 
-    # Удаляем сообщение пользователя с числом — чат остаётся чистым
+    # Удаляем сообщение пользователя с числом
     try:
         await message.delete()
     except Exception:
@@ -281,13 +286,21 @@ async def msg_enter_players(message: Message, state: FSMContext):
         await message.answer("⚠️ Количество игроков должно быть от <b>3</b> до <b>12</b>.", parse_mode="HTML")
         return
 
+    # Удаляем сообщение бота «Введите количество игроков»
+    try:
+        await message.bot.delete_message(message.chat.id, data["ask_players_msg_id"])
+    except Exception:
+        pass
+
     await state.update_data(num_players=num)
     await state.set_state(GameStates.entering_spies)
-    await message.answer(
-        f"✅ Игроков: <b>{num}</b>\n\n"
+
+    # Отправляем запрос шпионов и сохраняем его id
+    msg = await message.answer(
         f"🕵️ <b>Введите количество шпионов</b> (от 0 до 12):",
         parse_mode="HTML",
     )
+    await state.update_data(ask_spies_msg_id=msg.message_id)
 
 
 async def msg_enter_spies(message: Message, state: FSMContext):
@@ -296,7 +309,7 @@ async def msg_enter_spies(message: Message, state: FSMContext):
     num_players = data["num_players"]
     text = message.text.strip()
 
-    # Удаляем сообщение пользователя с числом — чат остаётся чистым
+    # Удаляем сообщение пользователя с числом
     try:
         await message.delete()
     except Exception:
@@ -318,6 +331,12 @@ async def msg_enter_spies(message: Message, state: FSMContext):
         )
         return
 
+    # Удаляем сообщение бота «Введите количество шпионов»
+    try:
+        await message.bot.delete_message(message.chat.id, data["ask_spies_msg_id"])
+    except Exception:
+        pass
+
     roles = generate_roles(num_players, num_spies)
 
     await state.update_data(
@@ -327,10 +346,10 @@ async def msg_enter_spies(message: Message, state: FSMContext):
     )
     await state.set_state(GameStates.showing_roles)
 
+    # Сразу показываем первого игрока — без строки «✅ Шпионов: N»
     await message.answer(
-        f"✅ Шпионов: <b>{num_spies}</b>\n\n"
-        f"🎲 Роли распределены! Начинаем раздачу.\n\n"
-        f"📱 <b>Игрок 1</b>, узнай свою роль.",
+        "🎲 Роли распределены! Начинаем раздачу.\n\n"
+        "📱 <b>Игрок 1</b>, узнай свою роль.",
         reply_markup=kb_show_role(),
         parse_mode="HTML",
     )
@@ -385,7 +404,7 @@ async def cb_hide_role(callback: CallbackQuery, state: FSMContext):
             "🎉 <b>Все игроки узнали свои роли.</b>\n\n"
             "🚀 <b>Игра началась!</b> Включите таймер.\n\n"
             "Задавайте вопросы по кругу. Шпион должен остаться неразоблачённым!",
-            reply_markup=kb_show_all_roles(),
+            reply_markup=kb_game_ended(),
             parse_mode="HTML",
         )
 
@@ -409,6 +428,32 @@ async def cb_show_all_roles(callback: CallbackQuery, state: FSMContext):
             lines.append(f"✅ Игрок {role['player']} — <b>{role['character']}</b>")
 
     await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    await callback.answer()
+
+
+async def cb_play_again(callback: CallbackQuery, state: FSMContext):
+    """Играть снова — сохраняем кол-во игроков и шпионов, просто перераздаём роли."""
+    data = await state.get_data()
+    num_players = data.get("num_players")
+    num_spies = data.get("num_spies")
+
+    # Генерируем новые роли с теми же настройками
+    roles = generate_roles(num_players, num_spies)
+
+    await state.update_data(
+        roles=roles,
+        current_player_index=0,
+    )
+    await state.set_state(GameStates.showing_roles)
+
+    await callback.message.edit_text(
+        f"🔁 <b>Новый раунд!</b>\n"
+        f"👥 Игроков: <b>{num_players}</b> | 🕵️ Шпионов: <b>{num_spies}</b>\n\n"
+        "🎲 Роли перераспределены!\n\n"
+        "📱 <b>Игрок 1</b>, узнай свою роль.",
+        reply_markup=kb_show_role(),
+        parse_mode="HTML",
+    )
     await callback.answer()
 
 
@@ -443,6 +488,7 @@ async def main():
     dp.callback_query.register(cb_show_role,      F.data == "show_role",      GameStates.showing_roles)
     dp.callback_query.register(cb_hide_role,      F.data == "hide_role",      GameStates.showing_roles)
     dp.callback_query.register(cb_show_all_roles, F.data == "show_all_roles", GameStates.game_started)
+    dp.callback_query.register(cb_play_again,     F.data == "play_again",     GameStates.game_started)
 
     # Устанавливаем команды в меню Telegram
     await set_commands(bot)
