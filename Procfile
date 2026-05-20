@@ -1,0 +1,1 @@
+worker: python spyfall_bot.py
