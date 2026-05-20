@@ -16,8 +16,8 @@ import random
 import logging
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────
 # ДАННЫЕ ТЕМЫ "BRAWL STARS"
-# Каждый боец — словарь с именем и классом.
-# Обычные игроки видят имя бойца, шпион видит только его класс.
 # ──────────────────────────────────────────────
 BRAWL_STARS_FIGHTERS = [
     {"name": "Шелли",         "role": "Урон"},
@@ -144,15 +142,15 @@ BRAWL_STARS_FIGHTERS = [
 # FSM СОСТОЯНИЯ
 # ──────────────────────────────────────────────
 class GameStates(StatesGroup):
-    choosing_theme    = State()   # Выбор темы
-    entering_players  = State()   # Ввод количества игроков
-    entering_spies    = State()   # Ввод количества шпионов
-    showing_roles     = State()   # Раздача ролей поочерёдно
-    game_started      = State()   # Игра идёт
+    choosing_theme    = State()
+    entering_players  = State()
+    entering_spies    = State()
+    showing_roles     = State()
+    game_started      = State()
 
 
 # ──────────────────────────────────────────────
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ — КЛАВИАТУРЫ
+# КЛАВИАТУРЫ
 # ──────────────────────────────────────────────
 def kb_start() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -181,27 +179,18 @@ def kb_show_all_roles() -> InlineKeyboardMarkup:
 
 
 # ──────────────────────────────────────────────
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ — ГЕНЕРАЦИЯ РОЛЕЙ
+# ГЕНЕРАЦИЯ РОЛЕЙ
 # ──────────────────────────────────────────────
 def generate_roles(num_players: int, num_spies: int) -> list[dict]:
-    """
-    Возвращает список словарей:
-      {"player": 1, "is_spy": True/False, "character": "Имя бойца", "fighter_role": "Класс"}
-    Шпионы видят только класс бойца; обычные игроки видят имя бойца.
-    """
-    # Один случайный боец — «локация» этого раунда
     fighter = random.choice(BRAWL_STARS_FIGHTERS)
-
-    # Случайные индексы шпионов (0-based)
     spy_indices = set(random.sample(range(num_players), num_spies)) if num_spies > 0 else set()
-
     roles = []
     for i in range(num_players):
         roles.append({
             "player": i + 1,
             "is_spy": i in spy_indices,
-            "character": fighter["name"],   # Имя бойца (видит только мирный)
-            "fighter_role": fighter["role"], # Класс бойца (подсказка для шпиона)
+            "character": fighter["name"],
+            "fighter_role": fighter["role"],
         })
     return roles
 
@@ -222,8 +211,37 @@ async def cmd_start(message: Message, state: FSMContext):
     )
 
 
+async def cmd_help(message: Message):
+    """Команда /help — справка."""
+    await message.answer(
+        "📖 <b>Команды бота:</b>\n\n"
+        "/start — начать новую игру\n"
+        "/newgame — начать новую игру заново\n"
+        "/help — показать это сообщение\n\n"
+        "<b>Как играть:</b>\n"
+        "1. Выберите тему\n"
+        "2. Введите количество игроков (3–12)\n"
+        "3. Введите количество шпионов (0–12)\n"
+        "4. Каждый игрок по очереди смотрит свою роль\n"
+        "5. Мирные знают бойца, шпион знает только его класс\n"
+        "6. Обсуждайте и вычисляйте шпиона!",
+        parse_mode="HTML",
+    )
+
+
+async def cmd_newgame(message: Message, state: FSMContext):
+    """Команда /newgame — сбросить и начать заново."""
+    await state.clear()
+    await message.answer(
+        "🔄 Игра сброшена! Начинаем заново.\n\n"
+        "Нажмите кнопку ниже, чтобы начать.",
+        reply_markup=kb_start(),
+        parse_mode="HTML",
+    )
+
+
 async def cb_start_game(callback: CallbackQuery, state: FSMContext):
-    """Нажата кнопка «Старт» — переходим к выбору темы."""
+    """Нажата кнопка «Старт»."""
     await state.set_state(GameStates.choosing_theme)
     await callback.message.edit_text(
         "🎯 <b>Выберите тему игры:</b>",
@@ -234,7 +252,7 @@ async def cb_start_game(callback: CallbackQuery, state: FSMContext):
 
 
 async def cb_choose_theme(callback: CallbackQuery, state: FSMContext):
-    """Выбрана тема — просим ввести количество игроков."""
+    """Выбрана тема."""
     await state.update_data(theme="brawlstars")
     await state.set_state(GameStates.entering_players)
     await callback.message.edit_text(
@@ -245,8 +263,15 @@ async def cb_choose_theme(callback: CallbackQuery, state: FSMContext):
 
 
 async def msg_enter_players(message: Message, state: FSMContext):
-    """Обработка ввода количества игроков."""
+    """Ввод количества игроков."""
     text = message.text.strip()
+
+    # Удаляем сообщение пользователя с числом — чат остаётся чистым
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     if not text.isdigit():
         await message.answer("⚠️ Пожалуйста, введите <b>целое число</b>.", parse_mode="HTML")
         return
@@ -259,25 +284,30 @@ async def msg_enter_players(message: Message, state: FSMContext):
     await state.update_data(num_players=num)
     await state.set_state(GameStates.entering_spies)
     await message.answer(
-        f"🕵️ <b>Введите количество шпионов</b>\n"
-        f"(от 0 до 12):",
+        f"✅ Игроков: <b>{num}</b>\n\n"
+        f"🕵️ <b>Введите количество шпионов</b> (от 0 до 12):",
         parse_mode="HTML",
     )
 
 
 async def msg_enter_spies(message: Message, state: FSMContext):
-    """Обработка ввода количества шпионов."""
+    """Ввод количества шпионов."""
     data = await state.get_data()
     num_players = data["num_players"]
-
     text = message.text.strip()
+
+    # Удаляем сообщение пользователя с числом — чат остаётся чистым
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
     if not text.isdigit():
         await message.answer("⚠️ Пожалуйста, введите <b>целое число</b>.", parse_mode="HTML")
         return
 
     num_spies = int(text)
 
-    # Валидация: от 0 до num_players (шпионов может быть столько же, сколько игроков)
     if num_spies < 0:
         await message.answer("⚠️ Количество шпионов не может быть отрицательным.", parse_mode="HTML")
         return
@@ -288,18 +318,17 @@ async def msg_enter_spies(message: Message, state: FSMContext):
         )
         return
 
-    # Генерируем роли
     roles = generate_roles(num_players, num_spies)
 
     await state.update_data(
         num_spies=num_spies,
         roles=roles,
-        current_player_index=0,   # Индекс текущего игрока (0-based)
+        current_player_index=0,
     )
     await state.set_state(GameStates.showing_roles)
 
-    # Показываем первый экран «Игрок 1, подойди к экрану»
     await message.answer(
+        f"✅ Шпионов: <b>{num_spies}</b>\n\n"
         f"🎲 Роли распределены! Начинаем раздачу.\n\n"
         f"📱 <b>Игрок 1</b>, узнай свою роль.",
         reply_markup=kb_show_role(),
@@ -308,7 +337,7 @@ async def msg_enter_spies(message: Message, state: FSMContext):
 
 
 async def cb_show_role(callback: CallbackQuery, state: FSMContext):
-    """Нажата кнопка «Показать роль»."""
+    """Показать роль игрока."""
     data = await state.get_data()
     roles = data["roles"]
     idx = data["current_player_index"]
@@ -337,14 +366,13 @@ async def cb_show_role(callback: CallbackQuery, state: FSMContext):
 
 
 async def cb_hide_role(callback: CallbackQuery, state: FSMContext):
-    """Нажата кнопка «Скрыть роль» — переходим к следующему игроку или завершаем раздачу."""
+    """Скрыть роль и перейти к следующему игроку."""
     data = await state.get_data()
     roles = data["roles"]
     idx = data["current_player_index"]
     next_idx = idx + 1
 
     if next_idx < len(roles):
-        # Следующий игрок
         await state.update_data(current_player_index=next_idx)
         await callback.message.edit_text(
             f"📱 <b>Игрок {next_idx + 1}</b>, подойди к экрану.",
@@ -352,7 +380,6 @@ async def cb_hide_role(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
         )
     else:
-        # Все получили роли — игра начинается
         await state.set_state(GameStates.game_started)
         await callback.message.edit_text(
             "🎉 <b>Все игроки узнали свои роли.</b>\n\n"
@@ -366,7 +393,7 @@ async def cb_hide_role(callback: CallbackQuery, state: FSMContext):
 
 
 async def cb_show_all_roles(callback: CallbackQuery, state: FSMContext):
-    """Нажата кнопка «Показать все роли» — вывод итогов для проверки."""
+    """Показать все роли после игры."""
     data = await state.get_data()
     roles = data.get("roles", [])
 
@@ -386,6 +413,18 @@ async def cb_show_all_roles(callback: CallbackQuery, state: FSMContext):
 
 
 # ──────────────────────────────────────────────
+# УСТАНОВКА КОМАНД В МЕНЮ TELEGRAM
+# ──────────────────────────────────────────────
+async def set_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start",   description="🎮 Начать игру"),
+        BotCommand(command="newgame", description="🔄 Новая игра"),
+        BotCommand(command="help",    description="📖 Помощь"),
+    ]
+    await bot.set_my_commands(commands)
+
+
+# ──────────────────────────────────────────────
 # ТОЧКА ВХОДА
 # ──────────────────────────────────────────────
 async def main():
@@ -393,15 +432,20 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
 
     # Регистрируем хэндлеры
-    dp.message.register(cmd_start, CommandStart())
-    dp.message.register(msg_enter_players, GameStates.entering_players)
-    dp.message.register(msg_enter_spies,   GameStates.entering_spies)
+    dp.message.register(cmd_start,          CommandStart())
+    dp.message.register(cmd_help,           Command("help"))
+    dp.message.register(cmd_newgame,        Command("newgame"))
+    dp.message.register(msg_enter_players,  GameStates.entering_players)
+    dp.message.register(msg_enter_spies,    GameStates.entering_spies)
 
-    dp.callback_query.register(cb_start_game,      F.data == "start_game")
-    dp.callback_query.register(cb_choose_theme,    F.data == "theme_brawlstars")
-    dp.callback_query.register(cb_show_role,       F.data == "show_role",      GameStates.showing_roles)
-    dp.callback_query.register(cb_hide_role,       F.data == "hide_role",      GameStates.showing_roles)
-    dp.callback_query.register(cb_show_all_roles,  F.data == "show_all_roles", GameStates.game_started)
+    dp.callback_query.register(cb_start_game,     F.data == "start_game")
+    dp.callback_query.register(cb_choose_theme,   F.data == "theme_brawlstars")
+    dp.callback_query.register(cb_show_role,      F.data == "show_role",      GameStates.showing_roles)
+    dp.callback_query.register(cb_hide_role,      F.data == "hide_role",      GameStates.showing_roles)
+    dp.callback_query.register(cb_show_all_roles, F.data == "show_all_roles", GameStates.game_started)
+
+    # Устанавливаем команды в меню Telegram
+    await set_commands(bot)
 
     logger.info("Бот запущен!")
     await dp.start_polling(bot)
